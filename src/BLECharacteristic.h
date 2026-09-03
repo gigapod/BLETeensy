@@ -201,6 +201,7 @@ protected:
 
     // Notify needs a can-send call followed by a notify call, so pass all info we need in a private ctx struct
     typedef struct notifyInfo {
+        BLECharacteristic *owner;
         uint16_t con_handle;
         uint16_t char_handle;
         void *value;
@@ -210,6 +211,12 @@ protected:
     notifyInfo _notifyInfo;
     /*btstack_context_callback_registration_t *_canSend;*/
     void *_canSend = nullptr;
+    // True while _canSend is linked into btstack's att_server notification_requests
+    // list (registered via att_server_register_can_send_now_callback() but not yet
+    // fired). Since _canSend is a single reused struct, registering it again while
+    // it's still linked would add the same node to that list twice, corrupting it
+    // into a self-referencing loop -- see requestNotify().
+    bool _notifyPending = false;
 
     void requestNotify();
 

@@ -157,19 +157,35 @@ void BLECharacteristic::setConHandle(uint16_t c) {
 // Called when the BLE report disconnect
 void BLECharacteristic::disconnected() {
     _notificationEnabled = false;
+    // Whatever hci_connection this was pending against is being torn down
+    // (and its att_server's notification_requests list along with it), so
+    // our registration -- if still queued -- will never fire. Clear the
+    // flag so a future connection's requestNotify() isn't permanently
+    // blocked from ever registering again.
+    _notifyPending = false;
 }
 
 void BLECharacteristic::requestNotify() {
     if (!_notificationEnabled || !con_handle) {
         return;  // Easy peasy, lemon squeezy
     }
+    _notifyInfo.owner = this;
     _notifyInfo.con_handle = con_handle;
     _notifyInfo.char_handle = _valueHandle;
     _notifyInfo.value = _charData;
     _notifyInfo.len = _charLen;
+    if (_notifyPending) {
+        // Already registered with btstack and not yet fired -- it will pick
+        // up the updated _notifyInfo above when it does. Registering the
+        // same _canSend node a second time before then would link it into
+        // btstack's internal notification_requests list twice, corrupting
+        // it into a self-referencing loop and hanging the run loop.
+        return;
+    }
     btstack_context_callback_registration_t *cs = (btstack_context_callback_registration_t *)_canSend;
     cs->callback = _canSendCB;
     cs->context = &_notifyInfo;
+    _notifyPending = true;
     BluetoothLock lock;
     att_server_register_can_send_now_callback(cs, con_handle);
 }
@@ -177,6 +193,7 @@ void BLECharacteristic::requestNotify() {
 void BLECharacteristic::_canSendCB(void *t) {
     // Will be running in BT ctx already
     notifyInfo *n = static_cast<notifyInfo *>(t);
+    n->owner->_notifyPending = false;
     att_server_notify(n->con_handle, n->char_handle, (uint8_t *)n->value, n->len);
 }
 
@@ -205,9 +222,17 @@ int BLECharacteristic::handleWrite(uint16_t attribute_handle, uint16_t transacti
     (void) transaction_mode;
     (void) offset;
     // Will be running in BT ctx already
-    if (attribute_handle == _configHandle) {
-        _notificationEnabled = little_endian_read_16(buffer, 0);
-        _configData = little_endian_read_16(buffer, 0);
+    // att_server.c's att_notify_write_callbacks() (called for every ATT prepared-write
+    // Execute/Cancel transaction, anywhere in the GATT database, not just this
+    // characteristic) broadcasts to every registered service's write_callback with
+    // attribute_handle == 0 and buffer == NULL. _configHandle is 0 for a characteristic
+    // that isn't notify/indicate-capable (see addATTDB()), so without the != 0 guard
+    // that broadcast false-matches "a write to my CCCD" and dereferences a null buffer.
+    if (_configHandle != 0 && attribute_handle == _configHandle) {
+        if (buffer && buffer_size >= 2) {
+            _notificationEnabled = little_endian_read_16(buffer, 0);
+            _configData = little_endian_read_16(buffer, 0);
+        }
     } else if (attribute_handle == _valueHandle) {
         _charData = realloc(_charData, buffer_size + 1);
         memcpy(_charData, buffer, buffer_size);

@@ -3,6 +3,9 @@
 
 // Send any byte over USB Serial to make it send "BONGO" to your attached BLE client
 
+// For low-level BTstack/HCI traffic (packet-level detail, not needed for normal use),
+// build with -DDEBUG_BLETEENSY -DDEBUG_BLETEENSY_PORT=Serial as extra build flags.
+
 #include <BLE.h>
 
 // Note that this class implements the BLEService and the Characteristic Callbacks so it's self-contained
@@ -32,6 +35,7 @@ class BLECustomService : public BLEService, public BLECharacteristicCallbacks, p
 
     // Let the main app set the readable value
     void out(String str) {
+      Serial.printf("[%lu] Notifying c2 <- \"%s\"\n", millis(), str.c_str());
       c2->setValue(str);
     }
 
@@ -44,19 +48,25 @@ class BLECustomService : public BLEService, public BLECharacteristicCallbacks, p
       if (c != c1) {
         return;  // Shouldn't ever happen
       }
+      Serial.printf("[%lu] c1 written (%u bytes): \"%.*s\"\n", millis(), (unsigned)c->valueLen(), (int)c->valueLen(), (const char *)c->valueData());
       c2->setValue((const uint8_t *)c->valueData(), c->valueLen());
     }
-    // We could also implement onRead()
+
+    void onRead(BLECharacteristic *c) {
+      Serial.printf("[%lu] %s read\n", millis(), (c == c1) ? "c1" : (c == c2 ? "c2" : "?"));
+    }
 
     // BLEServerCallbacks
     void onConnect(BLEServer *s) {
       (void) s;
       connected = true;
+      Serial.printf("[%lu] Client connected\n", millis());
     }
 
     void onDisconnect(BLEServer *s) {
       (void) s;
       connected = false;
+      Serial.printf("[%lu] Client disconnected\n", millis());
     }
 
     BLECharacteristic *c1; // Writable
@@ -66,10 +76,35 @@ class BLECustomService : public BLEService, public BLECharacteristicCallbacks, p
 // Actual instance of the service
 BLECustomService svc;
 
+// Periodic "still alive" status line so it's obvious from the Serial Monitor
+// whether the sketch is running/connected vs. hung or reset.
+static uint32_t lastStatus = 0;
+static const uint32_t STATUS_INTERVAL_MS = 5000;
+
+void printStatus() {
+  Serial.printf("[%lu] status: %s, addr %s\n",
+                millis(),
+                svc.connected ? "connected" : "advertising",
+                BLE.address().toString().c_str());
+}
+
 void setup() {
+  while (!Serial && millis() < 3000) {}  // give the USB serial monitor time to attach
+  if (CrashReport) {
+    // If the last run ended in a hard fault, print exactly where before continuing.
+    Serial.print(CrashReport);
+  }
+
+  Serial.println("CustomService: starting BLE...");
   BLE.begin("TeensyBongo");
+  Serial.printf("BLE address: %s\n", BLE.address().toString().c_str());
+
   BLE.server()->addService(&svc);
+  BLE.server()->setCallbacks(&svc);  // so svc's onConnect()/onDisconnect() actually fire
   BLE.startAdvertising();
+  Serial.println("Advertising as \"TeensyBongo\"");
+
+  lastStatus = millis();
 }
 
 void loop() {
@@ -77,10 +112,16 @@ void loop() {
   // HCI UART and run loop -- see README.md.
   BLE.update();
 
+  if ((millis() - lastStatus) >= STATUS_INTERVAL_MS) {
+    printStatus();
+    lastStatus = millis();
+  }
+
   if (Serial.available()) {
     while (Serial.available()) {
       Serial.read();
     }
+    Serial.printf("[%lu] Serial input received, sending BONGO\n", millis());
     svc.out("BONGO!");
   }
 }
