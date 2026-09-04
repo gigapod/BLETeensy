@@ -118,8 +118,8 @@ void BLEClass::begin(String name)
         static const hci_transport_config_uart_t config = {
             HCI_TRANSPORT_CONFIG_UART,
             115200,
-            0, // main baudrate, matches BTstackTeensy's default
-            0, // hardware flow control
+            921600, // main baudrate, matches BTstackTeensy's default
+            1, // hardware flow control
             NULL,
         };
         const hci_transport_t *transport = hci_transport_h4_instance(btstack_uart_block_embedded_instance());
